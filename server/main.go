@@ -1,12 +1,15 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"time"
+
+	_ "github.com/mattn/go-sqlite3"
 )
 
 type Cotacao struct {
@@ -15,15 +18,45 @@ type Cotacao struct {
 	DataConsulta time.Time `json:"create_date" db:"data_consulta"`
 }
 
-func main() {
-
-	dolar, err := buscaCotacao()
+func InitDB() (*sql.DB, error) {
+	// abre a conexão (cria arquivo caso não exista)
+	db, err := sql.Open("sqlite3", "./banco.db")
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
-	fmt.Println(dolar)
-	fmt.Printf("Cotação: %f\n", dolar.Valor)
-	fmt.Printf("Data: %s\n", dolar.DataConsulta)
+	// testa a conexão
+	if err = db.Ping(); err != nil {
+		return nil, err
+	}
+
+	createTableSQL := `CREATE TABLE IF NOT EXISTS cotacoes (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		valor REAL NOT NULL,
+		data_consulta DATETIME NOT NULL
+	); `
+
+	// executa o SQL
+	_, err = db.Exec(createTableSQL)
+	if err != nil {
+		return nil, err
+	}
+
+	fmt.Println("Banco de dados e tabela criados com sucesso!")
+	return db, nil
+}
+
+func InsertCotacao(db *sql.DB, cotacao *Cotacao) error {
+	stmt, err := db.Prepare("INSERT INTO cotacoes (valor, data_consulta) VALUES (?, ?)")
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	_, err = stmt.Exec(cotacao.Valor, cotacao.DataConsulta)
+	if err != nil {
+		return err
+	}
+	fmt.Println("cotação salva com sucesso!")
+	return nil
 }
 
 func buscaCotacao() (*Cotacao, error) {
@@ -76,4 +109,23 @@ func (q *Cotacao) UnmarshalJSON(data []byte) error {
 	q.DataConsulta = createDate
 
 	return nil
+}
+
+func main() {
+	cotacao, err := buscaCotacao()
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("Cotação: %f\n", cotacao.Valor)
+	fmt.Printf("Data: %s\n", cotacao.DataConsulta)
+
+	db, err := InitDB()
+	if err != nil {
+		panic(err)
+	}
+
+	err = InsertCotacao(db, cotacao)
+	if err != nil {
+		panic(err)
+	}
 }
