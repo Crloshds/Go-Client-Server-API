@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -45,22 +47,31 @@ func InitDB() (*sql.DB, error) {
 	return db, nil
 }
 
-func InsertCotacao(db *sql.DB, cotacao *Cotacao) error {
-	stmt, err := db.Prepare("INSERT INTO cotacoes (valor, data_consulta) VALUES (?, ?)")
+func InsertCotacao(ctx context.Context, db *sql.DB, cotacao *Cotacao) error {
+	stmt, err := db.PrepareContext(ctx, "INSERT INTO cotacoes (valor, data_consulta) VALUES (?, ?)")
 	if err != nil {
 		return err
 	}
+
 	defer stmt.Close()
-	_, err = stmt.Exec(cotacao.Valor, cotacao.DataConsulta)
+	_, err = stmt.ExecContext(ctx, cotacao.Valor, cotacao.DataConsulta)
 	if err != nil {
 		return err
 	}
+
 	fmt.Println("cotação salva com sucesso!")
 	return nil
 }
 
-func buscaCotacao() (*Cotacao, error) {
-	resp, err := http.Get("https://economia.awesomeapi.com.br/json/last/USD-BRL")
+func buscaCotacao(ctx context.Context) (*Cotacao, error) {
+	//cria request com context
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://economia.awesomeapi.com.br/json/last/USD-BRL", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	//executa request
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -111,8 +122,40 @@ func (q *Cotacao) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+func BuscaCotacaoHandler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/cotacao" {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	// Criar context com timeout de 200ms para a API de cotação
+	ctxAPI, cancelAPI := context.WithTimeout(r.Context(), 200*time.Millisecond)
+	defer cancelAPI()
+	defer log.Println("Request finalizada")
+
+	cotacao, err := buscaCotacao(ctxAPI)
+	if err != nil {
+		// Verificar se o timeout foi execido
+		if ctxAPI.Err() == context.DeadlineExceeded {
+			w.WriteHeader(http.StatusRequestTimeout)
+			w.Write([]byte("Timeout ao buscar cotação: limite de 200ms excedido"))
+			log.Println("Timeout ao buscar cotação: limite de 200ms excedido")
+		} else {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("Erro interno ao buscar cotação"))
+			log.Println("Erro interno ao buscar cotação")
+		}
+		return
+	}
+
+	w.Header().Set("Content-type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	log.Println("Request processada com sucesso.")
+	json.NewEncoder(w).Encode(cotacao.Valor)
+}
+
 func main() {
-	cotacao, err := buscaCotacao()
+	ctx := context.Background()
+	cotacao, err := buscaCotacao(ctx)
 	if err != nil {
 		panic(err)
 	}
@@ -123,9 +166,14 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	defer db.Close()
 
-	err = InsertCotacao(db, cotacao)
+	err = InsertCotacao(ctx, db, cotacao)
 	if err != nil {
 		panic(err)
 	}
+
+	fmt.Println("Servidor iniciado na porta 8080")
+	http.HandleFunc("/cotacao", BuscaCotacaoHandler)
+	http.ListenAndServe(":8080", nil)
 }
