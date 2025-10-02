@@ -122,7 +122,7 @@ func (q *Cotacao) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func BuscaCotacaoHandler(w http.ResponseWriter, r *http.Request) {
+func BuscaCotacaoHandler(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	if r.URL.Path != "/cotacao" {
 		w.WriteHeader(http.StatusNotFound)
 		return
@@ -147,6 +147,17 @@ func BuscaCotacaoHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctxDB, cancelDB := context.WithTimeout(r.Context(), 10*time.Millisecond)
+	defer cancelDB()
+
+	if err := InsertCotacao(ctxDB, db, cotacao); err != nil {
+		if ctxDB.Err() == context.DeadlineExceeded {
+			log.Println("Timeout de 10ms atingido ao tentar salvar no banco")
+		} else {
+			log.Println("Erro ao salvar no banco:", err)
+		}
+	}
+
 	w.Header().Set("Content-type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	log.Println("Request processada com sucesso.")
@@ -154,13 +165,6 @@ func BuscaCotacaoHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	ctx := context.Background()
-	cotacao, err := buscaCotacao(ctx)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Printf("Cotação: %f\n", cotacao.Valor)
-	fmt.Printf("Data: %s\n", cotacao.DataConsulta)
 
 	db, err := InitDB()
 	if err != nil {
@@ -168,12 +172,9 @@ func main() {
 	}
 	defer db.Close()
 
-	err = InsertCotacao(ctx, db, cotacao)
-	if err != nil {
-		panic(err)
-	}
-
 	fmt.Println("Servidor iniciado na porta 8080")
-	http.HandleFunc("/cotacao", BuscaCotacaoHandler)
+	http.HandleFunc("/cotacao", func(w http.ResponseWriter, r *http.Request) {
+		BuscaCotacaoHandler(w, r, db)
+	})
 	http.ListenAndServe(":8080", nil)
 }
